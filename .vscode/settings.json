@@ -1,0 +1,16 @@
+{
+  "psi-header.license-text": ["GNU General Public License (GPL) 2.0"],
+  "psi-header.templates": [
+    {
+      "language": "*",
+      "template": [
+        "WEBZILLA - A delightfull async libary for web pentesting stuff",
+        "File: <<filename>>",
+        "Project: <<projectname>>",
+        "File Created: <<filecreated('dddd, Do MMMM YYYY h:mm:ss a')>>",
+        "Author: <<author>>",
+        "Copyright <<year>> Luke Goddard"
+      ]
+    }
+  ]
+}
