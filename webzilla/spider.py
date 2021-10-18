@@ -40,7 +40,7 @@ from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
-SpiderFinding = AsyncGenerator[Tuple[ParseResult, Task[ClientResponse]], None]
+SpiderFinding = AsyncGenerator[Tuple[ParseResult, Task[Optional[ClientResponse]]], None]
 
 
 class SkipUrlException(Exception):
@@ -63,11 +63,14 @@ def get_abs_url(new_url: str, base_url: ParseResult) -> ParseResult:
 
     Returns:
         ParseResult: [description]
+
+    Raise:
+        SkipUrlException: if the schema found is not for HTTP/s
     """
     parsed_url = urlparse((new_url))
     if not bool(parsed_url.netloc):
         new_url = urljoin(base_url.geturl(), new_url)
-        return urlparse((new_url))
+        parsed_url = urlparse((new_url))
 
     return parsed_url
 
@@ -79,15 +82,30 @@ class AsyncRequestHandlerMixin:
     Session. This ClientSession is reused. for future requests
     """
 
+    _client: Optional[ClientSession] = None
+
+    async def set_client(self, client: ClientSession):
+        """Used to make testing easier by injecting a mock client"""
+        if self._client is not None:
+            await self._client.close()
+
+        self._client = client
+
     async def handle_request(self, url: ParseResult) -> ClientResponse:
         """Acutally sends the request to the server
         Args: url (ParseResult): The URL to send the HTTP request to
         Returns: ClientResponse: The HTTP response recived from the server
         """
+        if self._client is None:
+            raise AssertionError("Please use Spider as a context manager")
+
         return await self._client.get(url.geturl(), ssl=False)
 
     async def __aenter__(self):
         """Opens a client session """
+        if self._client is not None:
+            return self
+
         con = TCPConnector(limit=50)
         self._client = ClientSession(connector=con)
         return self
@@ -122,6 +140,11 @@ class QueueMixin:
         self._queue: asyncio.Queue[ParseResult] = asyncio.Queue(maxsize=max_queue_size)
         self._seen_urls = set()
 
+    @property
+    def urls_in_queue(self) -> int:
+        """The number of URL in the queue that have not been processed"""
+        return self._queue.qsize()
+
     def _filter_tasks(self) -> int:
         """
         Filters all of the tasks in the task list, and removed the tasks
@@ -132,7 +155,7 @@ class QueueMixin:
         self._tasks = list(filter(lambda t: not t.done(), self._tasks))
         return len(self._tasks)
 
-    async def _get_next_url(self) -> Optional[ParseResult]:
+    async def get_url(self) -> Optional[ParseResult]:
         """Get's the next URL from the queue. If the queue is
         empty this function will block until all the tasks have
         finished.
@@ -148,9 +171,9 @@ class QueueMixin:
             if num_active_tasks == 0:
                 return None
             await sleep(0.1)
-            return await self._get_next_url()
+            return await self.get_url()
 
-    async def _push_url(self, url: ParseResult) -> None:
+    async def push_url(self, url: ParseResult) -> None:
         """Adds another URL to the queue if it's not been processed before
         Args:
             url (ParseResult): The absoulte url
@@ -166,13 +189,21 @@ class AsyncSpider(QueueMixin, AsyncRequestHandlerMixin):
 
     unique_vault = True
 
-    def __init__(self, url: str, restrict_scope_to_seed_hostname=True, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(
+        self,
+        url: str,
+        restrict_scope_to_seed_hostname=True,
+        max_queue_size=100,
+        client: Optional[ClientSession] = None,
+        *args,
+        **kwargs,
+    ):
+        super().__init__(client=client)
         self.restrict_scope_to_seed_hostname = restrict_scope_to_seed_hostname
         self.seed_url: ParseResult = urlparse(url)
         self._tasks: List[Task] = []
 
-    async def handle_response(self, url, response) -> None:
+    async def handle_response(self, url: ParseResult, response: ClientResponse) -> None:
         """Overidable method for doing things with the response.
         The default implementation just parses the HTML and find
         new URLs to add to the queue
@@ -191,10 +222,13 @@ class AsyncSpider(QueueMixin, AsyncRequestHandlerMixin):
 
         for link in hrefs:
             abs_url = get_abs_url(link, url)
-            if abs_url.scheme in ["http", "https"]:
-                await self._push_url(abs_url)
 
-    async def _handle_response(self, url, response):
+            if not abs_url.scheme in ["http", "https"]:
+                continue
+
+            await self.push_url(abs_url)
+
+    async def _handle_response(self, url, response: ClientResponse):
         """Handles the response but catches and logs errors"""
         try:
             self.handle_response(url, response)
@@ -222,12 +256,12 @@ class AsyncSpider(QueueMixin, AsyncRequestHandlerMixin):
         Yields:
             Iterator[Tuple[ParseResult, ClientResponse]]: The parsed url and response
         """
-        await self._push_url(self.seed_url)
+        await self.push_url(self.seed_url)
 
         completed = 0
-        while (next_url := await self._get_next_url()) is not None:
+        while (next_url := await self.get_url()) is not None:
 
-            task: Task[ClientResponse] = asyncio.create_task(
+            task: Task[Optional[ClientResponse]] = asyncio.create_task(
                 self._request_lifecycle(next_url, self._queue)
             )
             self._tasks.append(task)
@@ -236,7 +270,10 @@ class AsyncSpider(QueueMixin, AsyncRequestHandlerMixin):
 
         await self._queue.join()
 
-    async def _request_lifecycle(self, url: ParseResult, queue):
+    async def _request_lifecycle(
+        self, url: ParseResult, queue
+    ) -> Optional[ClientResponse]:
+
         try:
             await self.pre_request(url)
             response = await self.handle_request(url)
@@ -244,7 +281,9 @@ class AsyncSpider(QueueMixin, AsyncRequestHandlerMixin):
             return response
         except (aiohttp.ClientConnectionError, aiohttp.ClientError) as e:
             logger.warning(f"{url.geturl()} -> {e}")
-        except SkipUrlException:
-            pass
+            return None
+        except SkipUrlException as e:
+            logger.warning(f"Skipping {url.geturl()} -> {e}")
+            return None
         finally:
             queue.task_done()

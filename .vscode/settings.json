@@ -1,4 +1,16 @@
 {
+  "files.exclude": {
+    "**/.git": true,
+    "**/.pyc": true,
+    "**/venv": true,
+    "**/__pycache__": true,
+    ".mypy_cache": true,
+    "**/.svn": true,
+    "**/.hg": true,
+    "**/CVS": true,
+    "**/.DS_Store": true,
+    "**/Thumbs.db": true
+  },
   "psi-header.license-text": ["GNU General Public License (GPL) 2.0"],
   "psi-header.templates": [
     {
