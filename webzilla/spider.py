@@ -17,7 +17,7 @@ Example:
     async def start(url):
         async with AsyncSpider(url) as spider:
             async for url, response in spider.crawl():
-                print(url.tourl())
+                print(url.geturl())
                 print(response.status)
 
     loop = asyncio.get_event_loop()
@@ -27,16 +27,20 @@ Example:
 import asyncio
 import logging
 
-from typing import AsyncGenerator, List, Optional, Tuple
+from typing import AsyncGenerator, List, Optional, Tuple, final
 from asyncio.queues import QueueEmpty
 from asyncio.tasks import Task, sleep
 from urllib.parse import ParseResult, urljoin, urlparse
+from dataclasses import dataclass
 
 import aiohttp
 from aiohttp import ClientSession
+from aiohttp.client import ClientTimeout
 from aiohttp.client_reqrep import ClientResponse
 from aiohttp.connector import TCPConnector
 from bs4 import BeautifulSoup
+from tqdm import tqdm
+from tqdm.contrib.logging import logging_redirect_tqdm
 
 logger = logging.getLogger(__name__)
 
@@ -48,31 +52,6 @@ class SkipUrlException(Exception):
     This exception is raised when a user defined condition is
     raised that tells the crawler not to crawl the current URL
     """
-
-
-def get_abs_url(new_url: str, base_url: ParseResult) -> ParseResult:
-    """Helper function to make sure that new urls are absolute
-
-    Args:
-        new_url (str): The new URL
-        base_url (ParseResult): The base URL
-
-    Example:
-        get_abs_url('/hi', urlparse('http://www.test.com')).geturl()
-        > 'http://www.test.com/hi'
-
-    Returns:
-        ParseResult: [description]
-
-    Raise:
-        SkipUrlException: if the schema found is not for HTTP/s
-    """
-    parsed_url = urlparse((new_url))
-    if not bool(parsed_url.netloc):
-        new_url = urljoin(base_url.geturl(), new_url)
-        parsed_url = urlparse((new_url))
-
-    return parsed_url
 
 
 class AsyncRequestHandlerMixin:
@@ -99,6 +78,11 @@ class AsyncRequestHandlerMixin:
         if self._client is None:
             raise AssertionError("Please use Spider as a context manager")
 
+        logger.debug(url.geturl())
+        logger.debug(url)
+        if url.scheme is None:
+            raise SkipUrlException("No Scheme")
+
         return await self._client.get(url.geturl(), ssl=False)
 
     async def __aenter__(self):
@@ -106,8 +90,11 @@ class AsyncRequestHandlerMixin:
         if self._client is not None:
             return self
 
-        con = TCPConnector(limit=50)
-        self._client = ClientSession(connector=con)
+        timeout = ClientTimeout(total=5, connect=4, sock_connect=4, sock_read=4)
+        con = TCPConnector(limit=100)
+        self._client = ClientSession(
+            connector=con, timeout=timeout, cookies={"boop": "boop"}
+        )
         return self
 
     async def __aexit__(self, exc_type, exc_value, exc_tb):
@@ -194,11 +181,13 @@ class AsyncSpider(QueueMixin, AsyncRequestHandlerMixin):
         url: str,
         restrict_scope_to_seed_hostname=True,
         max_queue_size=100,
+        progress: bool = False,
         client: Optional[ClientSession] = None,
         *args,
         **kwargs,
     ):
         super().__init__(client=client)
+        self.progress = progress
         self.restrict_scope_to_seed_hostname = restrict_scope_to_seed_hostname
         self.seed_url: ParseResult = urlparse(url)
         self._tasks: List[Task] = []
@@ -221,12 +210,8 @@ class AsyncSpider(QueueMixin, AsyncRequestHandlerMixin):
         hrefs = [anchor.get("href") for anchor in anchors]
 
         for link in hrefs:
-            abs_url = get_abs_url(link, url)
-
-            if not abs_url.scheme in ["http", "https"]:
-                continue
-
-            await self.push_url(abs_url)
+            abs_url = urljoin(url.geturl(), link)
+            await self.push_url(urlparse(abs_url))
 
     async def _handle_response(self, url, response: ClientResponse):
         """Handles the response but catches and logs errors"""
@@ -241,12 +226,14 @@ class AsyncSpider(QueueMixin, AsyncRequestHandlerMixin):
         """Overideable method to do stuff before the request is handled"""
 
     async def _pre_request(self, url: ParseResult):
+        if url.scheme is None:
+            raise SkipUrlException("No schema")
         if (
             self.restrict_scope_to_seed_hostname
             and url.hostname != self.seed_url.hostname
         ):
-            raise SkipUrlException
-        return self.pre_request(url)
+            raise SkipUrlException("invalid host")
+        return await self.pre_request(url)
 
     async def crawl(self) -> SpiderFinding:
         """Starts the crawling process and only ends when the queue is
@@ -258,7 +245,26 @@ class AsyncSpider(QueueMixin, AsyncRequestHandlerMixin):
         """
         await self.push_url(self.seed_url)
 
-        completed = 0
+        if self.progress:
+            with logging_redirect_tqdm():
+                with tqdm(total=1, unit="queue size") as bar:
+                    try:
+                        async for url, task in self._crawl():
+                            yield url, task
+                            bar.total = self.urls_in_queue
+                            # bar.update(n=bar.total - self._filter_tasks())
+                            bar.n = self.urls_in_queue - self._filter_tasks()
+                    except Exception as e:
+                        logger.warning(e)
+        else:
+            async for url, task in self._crawl():
+                yield url, task
+
+        logger.info("Joining queue")
+
+        await self._queue.join()
+
+    async def _crawl(self) -> SpiderFinding:
         while (next_url := await self.get_url()) is not None:
 
             task: Task[Optional[ClientResponse]] = asyncio.create_task(
@@ -266,16 +272,13 @@ class AsyncSpider(QueueMixin, AsyncRequestHandlerMixin):
             )
             self._tasks.append(task)
             yield next_url, task
-            completed += 1
-
-        await self._queue.join()
 
     async def _request_lifecycle(
         self, url: ParseResult, queue
     ) -> Optional[ClientResponse]:
 
         try:
-            await self.pre_request(url)
+            await self._pre_request(url)
             response = await self.handle_request(url)
             await self.handle_response(url, response)
             return response
@@ -283,7 +286,47 @@ class AsyncSpider(QueueMixin, AsyncRequestHandlerMixin):
             logger.warning(f"{url.geturl()} -> {e}")
             return None
         except SkipUrlException as e:
-            logger.warning(f"Skipping {url.geturl()} -> {e}")
+            logger.debug(f"Skipping {url.geturl()} -> {e}")
             return None
         finally:
             queue.task_done()
+
+
+@dataclass
+class SpiderDocoptArgs:
+    url: str
+    progress: bool
+
+
+@dataclass
+class PrintableResponse:
+    url: str
+    ok: bool
+    response_code: int
+
+    def __str__(self):
+        return f"[{self.response_code}] => {self.url}"
+
+
+def spawn_cmdline_spider(args: SpiderDocoptArgs):
+    async def start(url):
+        progress_log = None
+        logging_redirect_tqdm(loggers=[logger])
+
+        try:
+            async with AsyncSpider(
+                url, progress=args.progress, max_queue_size=10000
+            ) as spider:
+                async for url, response in spider.crawl():
+                    response = await response
+                    if not response:
+                        continue
+                    logger.info(
+                        PrintableResponse(url.geturl(), response.ok, response.status)
+                    )
+        finally:
+            if progress_log:
+                progress_log.close()
+
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(start(args.url))

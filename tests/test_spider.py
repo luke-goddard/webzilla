@@ -1,64 +1,13 @@
-import aiohttp
-from aiohttp.client_reqrep import ClientResponse
 import pytest
-from urllib.parse import ParseResult, urlparse
+from urllib.parse import urlparse
 
 from aiohttp import web
-from aiohttp.test_utils import make_mocked_request
 
 from webzilla.spider import (
     AsyncRequestHandlerMixin,
     AsyncSpider,
     QueueMixin,
-    SkipUrlException,
-    get_abs_url,
 )
-
-
-###########################################################################
-################################# ABS_URL #################################
-###########################################################################
-
-
-@pytest.mark.parametrize(
-    "base_url,parsed_url,expected",
-    [
-        (
-            "http://www.test.com/1",
-            urlparse("http://www.test.com"),
-            "http://www.test.com/1",
-        ),
-        (
-            "/1",
-            urlparse("http://www.test.com"),
-            "http://www.test.com/1",
-        ),
-        (
-            "/1",
-            urlparse("http://www.test.com/1"),
-            "http://www.test.com/1",
-        ),
-        (
-            "/1&id=1",
-            urlparse("http://www.test.com/1"),
-            "http://www.test.com/1&id=1",
-        ),
-        (
-            "/1&id=1",
-            urlparse("http://www.test.com/1"),
-            "http://www.test.com/1&id=1",
-        ),
-    ],
-)
-def test_abs_url(base_url, parsed_url, expected):
-    abs_url = get_abs_url(base_url, parsed_url)
-    assert abs_url.geturl() == expected
-
-
-def test_abs_url_invalid_schema():
-    with pytest.raises(SkipUrlException):
-        get_abs_url("test", urlparse("file://www.foobar.com"))
-
 
 ###########################################################################
 ########################## ASYNC REQUEST HANDLER ##########################
@@ -104,7 +53,7 @@ async def test_queue_mixin():
 
 
 async def test_async_spider(aiohttp_raw_server, aiohttp_client):
-    resp_data = "<a href='/1'/>"
+    resp_data = "<a href='/1'>test</a>"
 
     async def handler(request):
         return web.Response(text=resp_data)
