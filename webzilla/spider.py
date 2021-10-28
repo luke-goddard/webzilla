@@ -183,7 +183,7 @@ class ResponseHandler:
 
     def __init__(self, queue: RequestQueue):
         self.queue = queue
-        self.responses: List[Tuple[ClientResponse, ParseResult]] = []
+        self.responses: List[Tuple[ClientResponse, str]] = []
 
     async def handle(self, url: ParseResult, response: ClientResponse) -> None:
         """Overidable method for doing things with the response.
@@ -206,7 +206,7 @@ class ResponseHandler:
             abs_url = urlparse(urljoin(url.geturl(), link))
             await self.queue.push_url(abs_url)
 
-        self.responses.append((response, url))
+        self.responses.append((response, url.geturl()))
 
 
 class AsyncSpider:
@@ -219,34 +219,44 @@ class AsyncSpider:
         self,
         url: str,
         scope_hostname_restrict=True,
+        workers=10,
         client: Optional[ClientSession] = None,
     ):
+        self.workers = workers
         self.seed_url = urlparse(url)
         self.queue = RequestQueue(scope_hostname_restrict=scope_hostname_restrict)
         self.request_handler = RequestHandler(client=client)
         self.response_handler = ResponseHandler(self.queue)
+        self._active = False
 
     async def crawl(self):
-
+        """
+        Spawns the crawler workers and only finishes when the URL queue is exhausted or
+        the stop method is called
+        """
         await self.queue.push_url(self.seed_url)
 
+        self._active = True
         workers = [
             asyncio.create_task(self._worker(), name=f'spider-worker-{x}')
-            for x in range(100)
+            for x in range(self.workers)
         ]
         for worker in workers:
             while not worker.done():
                 if len(self.response_handler.responses) != 0:
                     yield self.response_handler.responses.pop()
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(0.001)
 
-        await self.queue.join()
+        if self._active:
+            await self.queue.join()
 
-    async def stop(self):
-        pass
+    def stop(self):
+        """Kills the spider"""
+        self._active = False
 
     async def _worker(self):
-        while True:
+        """Spawns the worker"""
+        while self._active:
             next_url = await self.queue.get_url()
 
             if next_url is None:
@@ -257,7 +267,7 @@ class AsyncSpider:
             if response is None:
                 continue
 
-            self.response_handler.handle(next_url, response)
+            await self.response_handler.handle(next_url, response)
         return None
 
     async def _request_lifecycle(self, url: ParseResult) -> Optional[ClientResponse]:
@@ -288,11 +298,11 @@ class AsyncSpider:
         return self.request_handler.__aenter__().__await__()
 
 
+async def _example_usage():
+    url = 'http://0.0.0.0:8000'
+    async with AsyncSpider(url, workers=300) as spider:
+        async for response, url in spider.crawl():
+            logger.info(f'{response.status} -> {url}')
 
 def spawn_cmdline_spider():
-    async def start():
-        async with AsyncSpider('http://0.0.0.0:8000') as spider:
-            async for response in spider.crawl():
-                print(response)
-
-    asyncio.run(start())
+    asyncio.run(_example_usage())

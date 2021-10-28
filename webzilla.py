@@ -40,12 +40,19 @@ def setup_cmdline_logging():
 
     # lvl = logging.DEBUG if args.debug else logging.INFO
     lvl = logging.DEBUG
-    fmt = "%(asctime)s %(lineno)s %(levelname)s %(message)s"
+    fmt = "%(asctime)s %(lineno)s %(levelname)s %(pathname)s %(message)s"
     coloredlogs.install(fmt=fmt, level=lvl)
+    logging.getLogger('chardet').propagate = False
+    logging.getLogger('chardet').disabled = True
+    logging.getLogger('bs4').propagate = False
+    logging.getLogger('bs4').disabled = True
+    logging.getLogger('bs4.dammit').propagate = False
+    logging.getLogger('bs4.dammit').disabled = True
     # logging.basicConfig(level=lvl)
 
 
 def handle_cmdline(arguments):
+    setup_cmdline_logging()
     if arguments["spider"]:
         return webzilla.spider.spawn_cmdline_spider()
 
