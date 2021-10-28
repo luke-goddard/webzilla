@@ -17,13 +17,11 @@ from docopt import docopt
 import coloredlogs
 
 import webzilla
+from webzilla.spider import spawn_cmdline_spider
+
 
 logger = logging.getLogger(__name__)
 
-
-@dataclass
-class GeneralArguments:
-    debug: bool = False
 
 
 def ascii():
@@ -37,21 +35,19 @@ def ascii():
     # fmt: on
 
 
-def setup_cmdline_logging(args: GeneralArguments):
-    lvl = logging.DEBUG if args.debug else logging.INFO
-    fmt = "%(asctime)s %(levelname)s %(message)s"
+# def setup_cmdline_logging(args: GeneralArguments):
+def setup_cmdline_logging():
+
+    # lvl = logging.DEBUG if args.debug else logging.INFO
+    lvl = logging.DEBUG
+    fmt = "%(asctime)s %(lineno)s %(levelname)s %(message)s"
     coloredlogs.install(fmt=fmt, level=lvl)
     # logging.basicConfig(level=lvl)
 
 
 def handle_cmdline(arguments):
-    genral_options = GeneralArguments(debug=arguments["--debug"])
-    setup_cmdline_logging(genral_options)
     if arguments["spider"]:
-        args = webzilla.spider.SpiderDocoptArgs(
-            url=arguments["<url>"], progress=arguments["--progress-bar"]
-        )
-        return webzilla.spider.spawn_cmdline_spider(args)
+        return webzilla.spider.spawn_cmdline_spider()
 
 
 if __name__ == "__main__":

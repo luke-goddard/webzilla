@@ -15,8 +15,6 @@ __copyright__ = "Copyright 2021 Luke Goddard"
 
 VERSION = __version__
 
-from .spider import AsyncSpider
-
 __all__ = [
     "__title__",
     "__version__",
@@ -24,5 +22,4 @@ __all__ = [
     "__licence__",
     "__copyright__",
     "VERSION",
-    "AsyncSpider",
 ]

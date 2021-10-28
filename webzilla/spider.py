@@ -27,11 +27,10 @@ Example:
 import asyncio
 import logging
 
-from typing import AsyncGenerator, List, Optional, Tuple, final
+from typing import AsyncGenerator, List, Optional, Tuple
 from asyncio.queues import QueueEmpty
 from asyncio.tasks import Task, sleep
 from urllib.parse import ParseResult, urljoin, urlparse
-from dataclasses import dataclass
 
 import aiohttp
 from aiohttp import ClientSession
@@ -39,8 +38,6 @@ from aiohttp.client import ClientTimeout
 from aiohttp.client_reqrep import ClientResponse
 from aiohttp.connector import TCPConnector
 from bs4 import BeautifulSoup
-from tqdm import tqdm
-from tqdm.contrib.logging import logging_redirect_tqdm
 
 logger = logging.getLogger(__name__)
 
@@ -54,14 +51,15 @@ class SkipUrlException(Exception):
     """
 
 
-class AsyncRequestHandlerMixin:
+class RequestHandler:
 
     """Concreate implementation of the request handler protocol.
     This Mixin uses a context manager to create an aiohttp Client
     Session. This ClientSession is reused. for future requests
     """
 
-    _client: Optional[ClientSession] = None
+    def __init__(self, client: ClientSession = None):
+        self._client = client
 
     async def set_client(self, client: ClientSession):
         """Used to make testing easier by injecting a mock client"""
@@ -70,7 +68,15 @@ class AsyncRequestHandlerMixin:
 
         self._client = client
 
-    async def handle_request(self, url: ParseResult) -> ClientResponse:
+    async def pre_request(self, url: ParseResult):
+        """Overideable method to do stuff before the request is handled"""
+
+    async def _pre_request(self, url: ParseResult):
+        if url.scheme is None:
+            raise SkipUrlException("No schema")
+        return await self.pre_request(url)
+
+    async def handle(self, url: ParseResult) -> ClientResponse:
         """Acutally sends the request to the server
         Args: url (ParseResult): The URL to send the HTTP request to
         Returns: ClientResponse: The HTTP response recived from the server
@@ -78,12 +84,12 @@ class AsyncRequestHandlerMixin:
         if self._client is None:
             raise AssertionError("Please use Spider as a context manager")
 
-        logger.debug(url.geturl())
-        logger.debug(url)
         if url.scheme is None:
+            logger.debug("Schema is none")
             raise SkipUrlException("No Scheme")
 
-        return await self._client.get(url.geturl(), ssl=False)
+        response = await self._client.get(url.geturl(), ssl=False)
+        return response
 
     async def __aenter__(self):
         """Opens a client session """
@@ -91,7 +97,7 @@ class AsyncRequestHandlerMixin:
             return self
 
         timeout = ClientTimeout(total=5, connect=4, sock_connect=4, sock_read=4)
-        con = TCPConnector(limit=100)
+        con = TCPConnector(limit=1000)
         self._client = ClientSession(
             connector=con, timeout=timeout, cookies={"boop": "boop"}
         )
@@ -105,7 +111,7 @@ class AsyncRequestHandlerMixin:
         return self.__aenter__().__await__()
 
 
-class QueueMixin:
+class RequestQueue:
 
     """
     Simple FIFO Queue system used to schedule what URL need
@@ -115,24 +121,26 @@ class QueueMixin:
         _task: List[Task]: A list of async tasks
     """
 
-    _tasks: List[Task]
-
-    def __init__(self, max_queue_size=100, *args, **kwargs):
-        """
-        Args:
-            max_queue_size (int, optional): Maximum number of requests in queue
-                                              before adding to queue blocks.
-                                              Defaults to 100.
-        """
-        self._queue: asyncio.Queue[ParseResult] = asyncio.Queue(maxsize=max_queue_size)
+    def __init__(self, scope_hostname_restrict=True):
+        self._scope_hostname_restrict = scope_hostname_restrict
+        self._queue: asyncio.Queue[ParseResult] = asyncio.Queue()
         self._seen_urls = set()
+        self._tasks: List[Task] = []
 
     @property
     def urls_in_queue(self) -> int:
         """The number of URL in the queue that have not been processed"""
         return self._queue.qsize()
 
-    def _filter_tasks(self) -> int:
+    async def task_done(self):
+        """Mark a task as being done"""
+        return self._queue.task_done()
+
+    async def join(self):
+        """Join the queue"""
+        return await self._queue.join()
+
+    def filter_tasks(self) -> int:
         """
         Filters all of the tasks in the task list, and removed the tasks
         that have allready completed.
@@ -153,8 +161,8 @@ class QueueMixin:
         """
         try:
             return self._queue.get_nowait()
-        except (QueueEmpty, Exception):
-            num_active_tasks = self._filter_tasks()
+        except QueueEmpty:
+            num_active_tasks = self.filter_tasks()
             if num_active_tasks == 0:
                 return None
             await sleep(0.1)
@@ -169,30 +177,15 @@ class QueueMixin:
             return
 
         self._seen_urls.add(url)
-        await self._queue.put(url)
+        self._queue.put_nowait(url)
 
+class ResponseHandler:
 
-class AsyncSpider(QueueMixin, AsyncRequestHandlerMixin):
+    def __init__(self, queue: RequestQueue):
+        self.queue = queue
+        self.responses: List[Tuple[ClientResponse, ParseResult]] = []
 
-    unique_vault = True
-
-    def __init__(
-        self,
-        url: str,
-        restrict_scope_to_seed_hostname=True,
-        max_queue_size=100,
-        progress: bool = False,
-        client: Optional[ClientSession] = None,
-        *args,
-        **kwargs,
-    ):
-        super().__init__(client=client)
-        self.progress = progress
-        self.restrict_scope_to_seed_hostname = restrict_scope_to_seed_hostname
-        self.seed_url: ParseResult = urlparse(url)
-        self._tasks: List[Task] = []
-
-    async def handle_response(self, url: ParseResult, response: ClientResponse) -> None:
+    async def handle(self, url: ParseResult, response: ClientResponse) -> None:
         """Overidable method for doing things with the response.
         The default implementation just parses the HTML and find
         new URLs to add to the queue
@@ -210,123 +203,96 @@ class AsyncSpider(QueueMixin, AsyncRequestHandlerMixin):
         hrefs = [anchor.get("href") for anchor in anchors]
 
         for link in hrefs:
-            abs_url = urljoin(url.geturl(), link)
-            await self.push_url(urlparse(abs_url))
+            abs_url = urlparse(urljoin(url.geturl(), link))
+            await self.queue.push_url(abs_url)
 
-    async def _handle_response(self, url, response: ClientResponse):
-        """Handles the response but catches and logs errors"""
+        self.responses.append((response, url))
+
+
+class AsyncSpider:
+
+    """
+    Async Spider
+    """
+
+    def __init__(
+        self,
+        url: str,
+        scope_hostname_restrict=True,
+        client: Optional[ClientSession] = None,
+    ):
+        self.seed_url = urlparse(url)
+        self.queue = RequestQueue(scope_hostname_restrict=scope_hostname_restrict)
+        self.request_handler = RequestHandler(client=client)
+        self.response_handler = ResponseHandler(self.queue)
+
+    async def crawl(self):
+
+        await self.queue.push_url(self.seed_url)
+
+        workers = [
+            asyncio.create_task(self._worker(), name=f'spider-worker-{x}')
+            for x in range(100)
+        ]
+        for worker in workers:
+            while not worker.done():
+                if len(self.response_handler.responses) != 0:
+                    yield self.response_handler.responses.pop()
+                await asyncio.sleep(0.1)
+
+        await self.queue.join()
+
+    async def stop(self):
+        pass
+
+    async def _worker(self):
+        while True:
+            next_url = await self.queue.get_url()
+
+            if next_url is None:
+                break
+
+            response = await self._request_lifecycle(next_url)
+
+            if response is None:
+                continue
+
+            self.response_handler.handle(next_url, response)
+        return None
+
+    async def _request_lifecycle(self, url: ParseResult) -> Optional[ClientResponse]:
         try:
-            self.handle_response(url, response)
-        except Exception as e:
-            logger.error(e)
-            logger.exception(e)
-            raise e
-
-    async def pre_request(self, url: ParseResult):
-        """Overideable method to do stuff before the request is handled"""
-
-    async def _pre_request(self, url: ParseResult):
-        if url.scheme is None:
-            raise SkipUrlException("No schema")
-        if (
-            self.restrict_scope_to_seed_hostname
-            and url.hostname != self.seed_url.hostname
-        ):
-            raise SkipUrlException("invalid host")
-        return await self.pre_request(url)
-
-    async def crawl(self) -> SpiderFinding:
-        """Starts the crawling process and only ends when the queue is
-        exhausted and when all the workers have finished handling the
-        requests.
-
-        Yields:
-            Iterator[Tuple[ParseResult, ClientResponse]]: The parsed url and response
-        """
-        await self.push_url(self.seed_url)
-
-        if self.progress:
-            with logging_redirect_tqdm():
-                with tqdm(total=1, unit="queue size") as bar:
-                    try:
-                        async for url, task in self._crawl():
-                            yield url, task
-                            bar.total = self.urls_in_queue
-                            # bar.update(n=bar.total - self._filter_tasks())
-                            bar.n = self.urls_in_queue - self._filter_tasks()
-                    except Exception as e:
-                        logger.warning(e)
-        else:
-            async for url, task in self._crawl():
-                yield url, task
-
-        logger.info("Joining queue")
-
-        await self._queue.join()
-
-    async def _crawl(self) -> SpiderFinding:
-        while (next_url := await self.get_url()) is not None:
-
-            task: Task[Optional[ClientResponse]] = asyncio.create_task(
-                self._request_lifecycle(next_url, self._queue)
-            )
-            self._tasks.append(task)
-            yield next_url, task
-
-    async def _request_lifecycle(
-        self, url: ParseResult, queue
-    ) -> Optional[ClientResponse]:
-
-        try:
-            await self._pre_request(url)
-            response = await self.handle_request(url)
-            await self.handle_response(url, response)
+            await self.request_handler.pre_request(url)
+            response = await self.request_handler.handle(url)
+            await self.response_handler.handle(url, response)
             return response
-        except (aiohttp.ClientConnectionError, aiohttp.ClientError) as e:
-            logger.warning(f"{url.geturl()} -> {e}")
+        except (aiohttp.ClientConnectionError, aiohttp.ClientError) as err:
+            logger.warning(f"{url.geturl()} -> {err}")
             return None
-        except SkipUrlException as e:
-            logger.debug(f"Skipping {url.geturl()} -> {e}")
+        except SkipUrlException as err:
+            logger.debug(f"Skipping {url.geturl()} -> {err}")
             return None
         finally:
-            queue.task_done()
+            await self.queue.task_done()
+
+    async def __aenter__(self):
+        """Opens a client session """
+        await self.request_handler.__aenter__()
+        return self
+
+    async def __aexit__(self, exc_type, exc_value, exc_tb):
+        """Closes the client session """
+        await self.request_handler.__aexit__(exc_type, exc_value, exc_tb)
+
+    def __await__(self):
+        return self.request_handler.__aenter__().__await__()
 
 
-@dataclass
-class SpiderDocoptArgs:
-    url: str
-    progress: bool
 
+def spawn_cmdline_spider():
+    async def start():
+        async with AsyncSpider('http://0.0.0.0:8000') as spider:
+            async for response in spider.crawl():
+                print(response)
 
-@dataclass
-class PrintableResponse:
-    url: str
-    ok: bool
-    response_code: int
-
-    def __str__(self):
-        return f"[{self.response_code}] => {self.url}"
-
-
-def spawn_cmdline_spider(args: SpiderDocoptArgs):
-    async def start(url):
-        progress_log = None
-        logging_redirect_tqdm(loggers=[logger])
-
-        try:
-            async with AsyncSpider(
-                url, progress=args.progress, max_queue_size=10000
-            ) as spider:
-                async for url, response in spider.crawl():
-                    response = await response
-                    if not response:
-                        continue
-                    logger.info(
-                        PrintableResponse(url.geturl(), response.ok, response.status)
-                    )
-        finally:
-            if progress_log:
-                progress_log.close()
-
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(start(args.url))
+    asyncio.run(start())
