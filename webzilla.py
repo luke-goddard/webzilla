@@ -1,66 +1,53 @@
-"""webzilla
-
-Usage:
-    webzilla spider <url> [-dp]
-
-Options:
-    -d --debug          Show extra logs
-    -p --progress-bar   Show progress bar
-"""
-
 import logging
-
-from dataclasses import dataclass
-
-from docopt import docopt
-
+import click
 import coloredlogs
 
-import webzilla
-from webzilla.spider import spawn_cmdline_spider
-
+from webzilla import spider
 
 logger = logging.getLogger(__name__)
-
 
 
 def ascii():
     # fmt: off
     print("____    __    ____  _______ .______    ________   __   __       __          ___      ")
-    print("\   \  /  \  /   / |   ____||   _  \  |       /  |  | |  |     |  |        /   \     ")
-    print(" \   \/    \/   /  |  |__   |  |_)  | `---/  /   |  | |  |     |  |       /  ^  \    ")
-    print("  \            /   |   __|  |   _  <     /  /    |  | |  |     |  |      /  /_\  \   ")
-    print("   \    /\    /    |  |____ |  |_)  |   /  /----.|  | |  `----.|  `----./  _____  \  ")
-    print("    \__/  \__/     |_______||______/   /________||__| |_______||_______/__/     \__\ \n")
+    print("\\   \\  /  \\  /   / |   ____||   _  \\  |       /  |  | |  |     |  |        /   \\     ")
+    print(" \\   \\/    \\/   /  |  |__   |  |_)  | `---/  /   |  | |  |     |  |       /  ^  \\    ")
+    print("  \\            /   |   __|  |   _  <     /  /    |  | |  |     |  |      /  /_\\  \\   ")
+    print("   \\    /\\    /    |  |____ |  |_)  |   /  /----.|  | |  `----.|  `----./  _____  \\  ")
+    print("    \\__/  \\__/     |_______||______/   /________||__| |_______||_______/__/     \\__\\ \n")
     # fmt: on
 
 
 # def setup_cmdline_logging(args: GeneralArguments):
-def setup_cmdline_logging():
-
-    # lvl = logging.DEBUG if args.debug else logging.INFO
-    lvl = logging.DEBUG
-    fmt = "%(asctime)s %(lineno)s %(levelname)s %(pathname)s %(message)s"
+def setup_cmdline_logging(verbose=False):
+    lvl = logging.DEBUG if verbose else logging.INFO
+    fmt = "%(asctime)s %(levelname)s %(filename)s:%(lineno)s %(message)s"
     coloredlogs.install(fmt=fmt, level=lvl)
-    logging.getLogger('chardet').propagate = False
-    logging.getLogger('chardet').disabled = True
-    logging.getLogger('bs4').propagate = False
-    logging.getLogger('bs4').disabled = True
-    logging.getLogger('bs4.dammit').propagate = False
-    logging.getLogger('bs4.dammit').disabled = True
-    # logging.basicConfig(level=lvl)
+    logging.getLogger("chardet").propagate = False
+    logging.getLogger("chardet").disabled = True
+    logging.getLogger("bs4").propagate = False
+    logging.getLogger("bs4").disabled = True
+    logging.getLogger("bs4.dammit").propagate = False
+    logging.getLogger("bs4.dammit").disabled = True
 
 
-def handle_cmdline(arguments):
-    setup_cmdline_logging()
-    if arguments["spider"]:
-        return webzilla.spider.spawn_cmdline_spider()
+@click.group()
+@click.option("-v", "--verbose", is_flag=True, help="verbose mode")
+def cli(verbose=False):
+    setup_cmdline_logging(verbose=verbose)
+    logger.debug("Setup logging")
+
+
+@click.command("spider")
+@click.argument("url")
+def spider_handler(url):
+    logger.debug(url)
+    spider.spawn_cmdline_spider(url)
 
 
 if __name__ == "__main__":
-    ascii()
-    arguments = docopt(__doc__, version=webzilla.__version__)
     try:
-        handle_cmdline(arguments)
+        cli.add_command(spider_handler)
+        cli()
     except KeyboardInterrupt:
-        pass
+        logger.warning("Shutting down")

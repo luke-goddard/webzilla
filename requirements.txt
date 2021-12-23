@@ -30,6 +30,7 @@ multidict==5.2.0
 mypi==0.0.3
 mypy==0.910
 mypy-extensions==0.4.3
+neovim==0.3.1
 packaging==21.0
 parso==0.8.2
 pathspec==0.9.0

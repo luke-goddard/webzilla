@@ -92,7 +92,7 @@ class RequestHandler:
         return response
 
     async def __aenter__(self):
-        """Opens a client session """
+        """Opens a client session"""
         if self._client is not None:
             return self
 
@@ -104,7 +104,7 @@ class RequestHandler:
         return self
 
     async def __aexit__(self, exc_type, exc_value, exc_tb):
-        """Closes the client session """
+        """Closes the client session"""
         await self._client.close()
 
     def __await__(self):
@@ -179,8 +179,8 @@ class RequestQueue:
         self._seen_urls.add(url)
         self._queue.put_nowait(url)
 
-class ResponseHandler:
 
+class ResponseHandler:
     def __init__(self, queue: RequestQueue):
         self.queue = queue
         self.responses: List[Tuple[ClientResponse, str]] = []
@@ -238,7 +238,7 @@ class AsyncSpider:
 
         self._active = True
         workers = [
-            asyncio.create_task(self._worker(), name=f'spider-worker-{x}')
+            asyncio.create_task(self._worker(), name=f"spider-worker-{x}")
             for x in range(self.workers)
         ]
         for worker in workers:
@@ -286,23 +286,23 @@ class AsyncSpider:
             await self.queue.task_done()
 
     async def __aenter__(self):
-        """Opens a client session """
+        """Opens a client session"""
         await self.request_handler.__aenter__()
         return self
 
     async def __aexit__(self, exc_type, exc_value, exc_tb):
-        """Closes the client session """
+        """Closes the client session"""
         await self.request_handler.__aexit__(exc_type, exc_value, exc_tb)
 
     def __await__(self):
         return self.request_handler.__aenter__().__await__()
 
 
-async def _example_usage():
-    url = 'http://0.0.0.0:8000'
+async def _example_usage(url):
     async with AsyncSpider(url, workers=300) as spider:
         async for response, url in spider.crawl():
-            logger.info(f'{response.status} -> {url}')
+            logger.info(f"{response.status} -> {url}")
 
-def spawn_cmdline_spider():
-    asyncio.run(_example_usage())
+
+def spawn_cmdline_spider(url):
+    asyncio.run(_example_usage(url))
