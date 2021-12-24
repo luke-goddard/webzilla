@@ -211,9 +211,7 @@ class ResponseHandler:
 
 class AsyncSpider:
 
-    """
-    Async Spider
-    """
+    """Async Spider"""
 
     def __init__(
         self,
@@ -281,6 +279,7 @@ class AsyncSpider:
     async def _request_lifecycle(
         self, url: ParseResult, wid: int
     ) -> Optional[ClientResponse]:
+
         logger.debug(f"worker (id:{wid}): {url.geturl()}")
         self.sync.sending_request(wid)
 

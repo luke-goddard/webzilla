@@ -44,6 +44,7 @@ def cli(verbose=False):
 def spider_handler(url, workers=50):
     logger.debug(url)
     spider.spawn_cmdline_spider(url, workers=workers)
+    logger.info("Finsihed crawling")
 
 
 if __name__ == "__main__":
