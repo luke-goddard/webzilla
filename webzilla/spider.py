@@ -224,6 +224,7 @@ class AsyncSpider:
     ):
         self.workers = workers
         self.seed_url = urlparse(url)
+        self.sync = AsyncSpiderSyncronizer(workers)
         self.queue = RequestQueue(scope_hostname_restrict=scope_hostname_restrict)
         self.request_handler = RequestHandler(client=client)
         self.response_handler = ResponseHandler(self.queue)
@@ -238,7 +239,7 @@ class AsyncSpider:
 
         self._active = True
         workers = [
-            asyncio.create_task(self._worker(), name=f"spider-worker-{x}")
+            asyncio.create_task(self._worker(x), name=f"spider-worker-{x}")
             for x in range(self.workers)
         ]
         for worker in workers:
@@ -254,15 +255,22 @@ class AsyncSpider:
         """Kills the spider"""
         self._active = False
 
-    async def _worker(self):
+    async def _worker(self, worker_id: int):
         """Spawns the worker"""
         while self._active:
             next_url = await self.queue.get_url()
 
-            if next_url is None:
+            if next_url is None and self.sync.workers_waiting_for_response():
+                # Don't kill yet because other requests can add to the queue
+                await asyncio.sleep(0.01)
+                continue
+
+            if next_url is None and not self.sync.workers_waiting_for_response():
+                # No other workers are making a request and the queue is empty
+                # so we kill the worker
                 break
 
-            response = await self._request_lifecycle(next_url)
+            response = await self._request_lifecycle(next_url, worker_id)
 
             if response is None:
                 continue
@@ -270,20 +278,32 @@ class AsyncSpider:
             await self.response_handler.handle(next_url, response)
         return None
 
-    async def _request_lifecycle(self, url: ParseResult) -> Optional[ClientResponse]:
+    async def _request_lifecycle(
+        self, url: ParseResult, wid: int
+    ) -> Optional[ClientResponse]:
+        logger.debug(f"worker (id:{wid}): {url.geturl()}")
+        self.sync.sending_request(wid)
+
         try:
             await self.request_handler.pre_request(url)
             response = await self.request_handler.handle(url)
             await self.response_handler.handle(url, response)
             return response
-        except (aiohttp.ClientConnectionError, aiohttp.ClientError) as err:
-            logger.warning(f"{url.geturl()} -> {err}")
-            return None
+        except aiohttp.InvalidURL:
+            logger.warning(f"Found dead url: {url}")
         except SkipUrlException as err:
             logger.debug(f"Skipping {url.geturl()} -> {err}")
             return None
+        except (
+            aiohttp.ClientConnectionError,
+            aiohttp.ClientError,
+            asyncio.TimeoutError,
+        ) as err:
+            logger.warning(f"{url.geturl()} -> {err.__class__}")
+            return None
         finally:
             await self.queue.task_done()
+            self.sync.finished_request(wid)
 
     async def __aenter__(self):
         """Opens a client session"""
@@ -298,11 +318,26 @@ class AsyncSpider:
         return self.request_handler.__aenter__().__await__()
 
 
-async def _example_usage(url):
-    async with AsyncSpider(url, workers=300) as spider:
+class AsyncSpiderSyncronizer:
+    def __init__(self, workers: int):
+        self.status = [False for x in range(workers)]
+
+    def sending_request(self, worker: int):
+        self.status[worker] = True
+
+    def finished_request(self, worker: int):
+        self.status[worker] = False
+
+    def workers_waiting_for_response(self):
+        return any(self.status)
+
+
+async def spawn_spider(url, workers=50):
+    async with AsyncSpider(url, workers=workers) as spider:
         async for response, url in spider.crawl():
             logger.info(f"{response.status} -> {url}")
 
 
-def spawn_cmdline_spider(url):
-    asyncio.run(_example_usage(url))
+def spawn_cmdline_spider(url, workers=50):
+    fn = spawn_spider(url, workers=workers)
+    asyncio.run(fn)

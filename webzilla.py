@@ -40,9 +40,10 @@ def cli(verbose=False):
 
 @click.command("spider")
 @click.argument("url")
-def spider_handler(url):
+@click.option("--workers", type=int, help="Number of async workers in the pool")
+def spider_handler(url, workers=50):
     logger.debug(url)
-    spider.spawn_cmdline_spider(url)
+    spider.spawn_cmdline_spider(url, workers=workers)
 
 
 if __name__ == "__main__":
