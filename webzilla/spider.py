@@ -331,12 +331,14 @@ class AsyncSpiderSyncronizer:
         return any(self.status)
 
 
-async def spawn_spider(url, workers=50):
+async def spawn_spider(url, workers=50, output=None):
     async with AsyncSpider(url, workers=workers) as spider:
         async for response, url in spider.crawl():
             logger.info(f"{response.status} -> {url}")
+            if output:
+                output.write(f"{url}\n")
 
 
-def spawn_cmdline_spider(url, workers=50):
-    fn = spawn_spider(url, workers=workers)
+def spawn_cmdline_spider(url, workers=50, output=None):
+    fn = spawn_spider(url, workers=workers, output=output)
     asyncio.run(fn)

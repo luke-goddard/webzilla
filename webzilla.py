@@ -40,10 +40,19 @@ def cli(verbose=False):
 
 @click.command("spider")
 @click.argument("url")
-@click.option("--workers", type=int, help="Number of async workers in the pool")
-def spider_handler(url, workers=50):
+@click.option("--workers", "-w", type=int, help="Number of async workers in the pool")
+@click.option(
+    "--output",
+    "-o",
+    type=click.File(mode="w", lazy=False),
+    default="/tmp/spider.log",
+    help="Save crawled URLs to disk",
+    show_default=True,
+)
+def spider_handler(url, workers=50, output=None):
+    print(output)
     logger.debug(url)
-    spider.spawn_cmdline_spider(url, workers=workers)
+    spider.spawn_cmdline_spider(url, workers=workers, output=output)
     logger.info("Finsihed crawling")
 
 
