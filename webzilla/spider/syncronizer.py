@@ -1,6 +1,12 @@
 class AsyncSpiderSyncronizer:
     def __init__(self, workers: int):
-        self.status = [False for x in range(workers)]
+        self.status = self._init_list(workers)
+    
+    def _init_list(self, workers: int):
+        if not isinstance(workers, int) or workers <= 0:
+            raise AttributeError('Workers must be a positive integer')
+
+        return [False] * workers
 
     def sending_request(self, worker: int):
         self.status[worker] = True
