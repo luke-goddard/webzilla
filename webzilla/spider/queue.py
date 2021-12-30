@@ -34,16 +34,6 @@ class RequestQueue:
         """Join the queue"""
         return await self._queue.join()
 
-    def filter_tasks(self) -> int:
-        """
-        Filters all of the tasks in the task list, and removed the tasks
-        that have allready completed.
-        Returns:
-            [int]: The number of tasks that have not been completed yet
-        """
-        self._tasks = list(filter(lambda t: not t.done(), self._tasks))
-        return len(self._tasks)
-
     async def get_url(self) -> Optional[ParseResult]:
         """Get's the next URL from the queue. If the queue is
         empty this function will block until all the tasks have
@@ -56,7 +46,7 @@ class RequestQueue:
         try:
             return self._queue.get_nowait()
         except QueueEmpty:
-            num_active_tasks = self.filter_tasks()
+            num_active_tasks = self._filter_tasks()
             if num_active_tasks == 0:
                 return None
             await sleep(0.1)
@@ -72,3 +62,13 @@ class RequestQueue:
 
         self._seen_urls.add(url)
         self._queue.put_nowait(url)
+
+    def _filter_tasks(self) -> int:
+        """
+        Filters all of the tasks in the task list, and removed the tasks
+        that have allready completed.
+        Returns:
+            [int]: The number of tasks that have not been completed yet
+        """
+        self._tasks = list(filter(lambda t: not t.done(), self._tasks))
+        return len(self._tasks)
